@@ -1,5 +1,62 @@
 #!/usr/bin/env node
 // Test-only JSON-RPC peer. No model calls or actual task commands are executed.
-import {createInterface} from 'node:readline';
-const send=m=>process.stdout.write(JSON.stringify(m)+'\n');
-createInterface({input:process.stdin}).on('line',line=>{const m=JSON.parse(line);if(m.method==='initialize')send({id:m.id,result:{userAgent:'fixture'}});if(m.method==='account/read')send({id:m.id,result:{account:{type:'chatgpt'}}});if(m.method==='thread/start')send({id:m.id,result:{thread:{id:'fixture-thread'}}});if(m.method==='turn/start'){send({id:m.id,result:{turn:{id:'fixture-turn'}}});setTimeout(()=>{send({method:'item/started',params:{threadId:'fixture-thread',item:{type:'commandExecution',command:'test-only command'}}});send({id:900,method:'item/commandExecution/requestApproval',params:{threadId:'fixture-thread',command:'test-only permission request'}})},20)}if(m.id===900&&m.result){send({method:'item/completed',params:{threadId:'fixture-thread',item:{id:'reply',type:'agentMessage',text:process.env.RUNNER_KEY?'CREDENTIAL LEAK':'Protocol fixture completed without web credentials'}}});send({method:'turn/completed',params:{threadId:'fixture-thread',turn:{id:'fixture-turn',status:'completed'}}})}if(m.method==='turn/interrupt'){send({id:m.id,result:{}});send({method:'turn/completed',params:{threadId:'fixture-thread',turn:{status:'interrupted'}}})}});
+import { createInterface } from "node:readline";
+const send = (m) => process.stdout.write(JSON.stringify(m) + "\n");
+createInterface({ input: process.stdin }).on("line", (line) => {
+  const m = JSON.parse(line);
+  if (m.method === "initialize")
+    send({ id: m.id, result: { userAgent: "fixture" } });
+  if (m.method === "account/read")
+    send({ id: m.id, result: { account: { type: "chatgpt" } } });
+  if (m.method === "thread/start")
+    send({ id: m.id, result: { thread: { id: "fixture-thread" } } });
+  if (m.method === "turn/start") {
+    send({ id: m.id, result: { turn: { id: "fixture-turn" } } });
+    setTimeout(() => {
+      send({
+        method: "item/started",
+        params: {
+          threadId: "fixture-thread",
+          item: { type: "commandExecution", command: "test-only command" },
+        },
+      });
+      send({
+        id: 900,
+        method: "item/commandExecution/requestApproval",
+        params: {
+          threadId: "fixture-thread",
+          command: "test-only permission request",
+        },
+      });
+    }, 20);
+  }
+  if (m.id === 900 && m.result) {
+    send({
+      method: "item/completed",
+      params: {
+        threadId: "fixture-thread",
+        item: {
+          id: "reply",
+          type: "agentMessage",
+          text: process.env.RUNNER_KEY
+            ? "CREDENTIAL LEAK"
+            : "Protocol fixture completed without web credentials",
+        },
+      },
+    });
+    send({
+      method: "turn/completed",
+      params: {
+        threadId: "fixture-thread",
+        turn: { id: "fixture-turn", status: "completed" },
+      },
+    });
+  }
+  if (m.method === "turn/interrupt") {
+    send({ id: m.id, result: {} });
+    send({
+      method: "turn/completed",
+      params: { threadId: "fixture-thread", turn: { status: "interrupted" } },
+    });
+  }
+});

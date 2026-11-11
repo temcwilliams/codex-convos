@@ -1,48 +1,887 @@
-const app=document.querySelector('#app');let user=null,workspace=null,selected=null,view='chat',events=[],runs=[],cursor=0,menu=false,dialog=null,pollBusy=false;
-const h=(tag,attrs={},...children)=>{const e=document.createElement(tag);for(const[k,v]of Object.entries(attrs)){if(k.startsWith('on'))e.addEventListener(k.slice(2).toLowerCase(),v);else if(k==='class')e.className=v;else if(k==='text')e.textContent=v;else if(k==='value')e.value=v;else if(v!==false&&v!=null)e.setAttribute(k,v===true?'':v)}for(const c of children.flat(Infinity))if(c!=null)e.append(c instanceof Node?c:document.createTextNode(String(c)));return e};
-function notice(text){const n=document.querySelector('#notice');n.textContent=text;n.style.display='block';setTimeout(()=>n.style.display='none',6000)}
-async function api(path,data){const response=await fetch('/api'+path,{method:data===undefined?'GET':'POST',headers:data===undefined?{}:{'Content-Type':'application/json','X-Codex-Client':'web'},body:data===undefined?undefined:JSON.stringify(data)});let result;try{result=await response.json()}catch{throw new Error('Connection unavailable. Please retry.')}if(!response.ok){if(response.status===401&&user){user=null;await boot()}throw new Error(result.error||'Request failed')}return result}
-const input=(name,label,type='text',attrs={})=>h('label',{},label,h('input',{name,type,required:true,...attrs}));
-function formHandler(fn){return async e=>{e.preventDefault();const form=e.currentTarget;const button=form.querySelector('button[type=submit]');if(button)button.disabled=true;try{await fn(Object.fromEntries(new FormData(form)))}catch(err){notice(err.message)}finally{if(button)button.disabled=false}}}
-function showAuth(setup=false){const invite=new URLSearchParams(location.search).get('invite');const mode=invite?'join':setup?'setup':'login';const form=h('form',{onSubmit:formHandler(async fields=>{const data=await api('/'+mode,{...fields,...(invite?{invite}:{})});user=data.user;history.replaceState(null,'','/');await openWorkspace()})},mode!=='login'?input('name','Your name','text',{maxlength:60}):null,input('email','Email','email',{autocomplete:'email'}),input('password',mode==='login'?'Password':'Choose a password (at least 12 characters)','password',{minlength:mode==='login'?1:12,autocomplete:mode==='login'?'current-password':'new-password'}),setup&&!invite?input('setupKey','Owner setup key','password',{autocomplete:'off'}):null,h('button',{class:'primary',type:'submit'},mode==='login'?'Sign in':mode==='join'?'Accept invitation':'Create owner account'));
- app.replaceChildren(h('main',{class:'auth'},h('div',{class:'wordmark'},'CODEX CONVOS'),h('p',{class:'eyebrow'},'Your private coding workspace'),h('h1',{},mode==='login'?'Welcome back.':mode==='join'?'You’re invited.':'Let’s make it yours.'),h('p',{},mode==='login'?'Pick up a conversation, review the work, and keep your project moving.':mode==='join'?'Join this shared workspace with your own account.':'Set up the owner account. Only invited collaborators can join afterward.'),form,h('p',{class:'footnote'},'Conversations started here are tracked automatically. Existing ChatGPT and Codex app conversations are not imported.')))}
-const status=s=>h('span',{class:'status '+s},h('span',{class:'dot'}),s||'ready');
-function runnerLabel(){const r=workspace?.runner;return !r?.online?'Runner offline':r.accountReady?'Codex connected':'Runner needs sign-in'}
-function runnerBanner(){const r=workspace.runner;const box=h('div',{class:'runner-banner'},h('strong',{},runnerLabel()),h('div',{},!r.online?'You can queue a task now. It starts when an authenticated runner connects.':!r.accountReady?'The owner needs to sign in to Codex on the connected runner.':'Tasks run in isolated project worktrees. Code edits and tests are automatic; extra permissions require owner review.'));
- if(user.role==='owner'&&r.online&&!r.accountReady)box.append(h('button',{onClick:async()=>{try{await api('/runner-login',{});notice('Sign-in requested. Your code will appear here shortly.')}catch(e){notice(e.message)}}},'Connect Codex subscription'));
- if(user.role==='owner'&&r.login?.status==='pending'&&r.login.verificationUrl){box.append(h('p',{},'Open the official sign-in page and enter: ',h('strong',{},r.login.userCode)),h('a',{href:r.login.verificationUrl,target:'_blank',rel:'noopener noreferrer'},'Sign in with OpenAI'));}
- return box;
+const app = document.querySelector("#app");
+let user = null,
+  workspace = null,
+  selected = null,
+  view = "chat",
+  events = [],
+  runs = [],
+  cursor = 0,
+  menu = false,
+  dialog = null,
+  pollBusy = false;
+const h = (tag, attrs = {}, ...children) => {
+  const e = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs)) {
+    if (k.startsWith("on")) e.addEventListener(k.slice(2).toLowerCase(), v);
+    else if (k === "class") e.className = v;
+    else if (k === "text") e.textContent = v;
+    else if (k === "value") e.value = v;
+    else if (v !== false && v != null) e.setAttribute(k, v === true ? "" : v);
+  }
+  for (const c of children.flat(Infinity))
+    if (c != null)
+      e.append(c instanceof Node ? c : document.createTextNode(String(c)));
+  return e;
+};
+function notice(text) {
+  const n = document.querySelector("#notice");
+  n.textContent = text;
+  n.style.display = "block";
+  setTimeout(() => (n.style.display = "none"), 6000);
 }
-function buildShell(){app.replaceChildren(h('div',{class:'shell'},h('aside',{class:'sidebar'+(menu?' open':''),id:'sidebar'}),h('main',{class:'main'},h('header',{class:'topbar'},h('div',{},h('button',{class:'mobile-menu','aria-label':'Open conversations',onClick:()=>{menu=!menu;renderSidebar()}},'☰'),h('strong',{id:'heading'},' Workspace')),h('small',{class:'runner-summary',id:'runner-summary'},runnerLabel())),h('section',{class:'workspace-body',id:'body'}),h('footer',{class:'composer',id:'composer'}))));renderSidebar();renderBody();}
-function renderSidebar(){const sidebar=document.querySelector('#sidebar');if(!sidebar)return;sidebar.className='sidebar'+(menu?' open':'');sidebar.replaceChildren(h('div',{class:'wordmark'},'CODEX CONVOS'),h('div',{class:'project'},h('strong',{},'CODEX CONVOS'),h('small',{},'Shared project workspace'),h('a',{href:workspace.project.repo,target:'_blank',rel:'noopener noreferrer'},'GitHub repository ↗'),h('button',{onClick:projectDialog},'Repository activity')),h('button',{class:'primary',onClick:()=>{selected=null;events=[];cursor=0;view='chat';menu=false;buildShell()}},'+ New conversation'),h('div',{class:'nav'},h('button',{class:view==='chat'?'selected':'',onClick:()=>{view='chat';menu=false;buildShell()}},'Conversations'),h('button',{class:view==='office'?'selected':'',onClick:()=>{view='office';menu=false;buildShell()}},'Live office')),
- h('div',{class:'convolist'},workspace.conversations.length?workspace.conversations.map(c=>h('button',{class:'conversation'+(selected===c.id?' selected':''),onClick:()=>{selected=c.id;events=[];cursor=0;runs=[];view='chat';menu=false;buildShell();refreshConversation()}},h('span',{},c.title),status(c.run?.status||'ready'))):h('div',{class:'empty'},'No conversations yet. Start with a small, specific task.')),
- h('div',{class:'bottom'},h('small',{},user.name+' · '+user.role),user.role==='owner'?h('button',{onClick:inviteDialog},'People & invitations'):null,user.role==='owner'?h('a',{href:'/api/export',download:'codex-convos-history.json'},'Export conversation history'):null,h('button',{onClick:async()=>{await api('/logout',{});user=null;await boot()}},'Sign out')));
- const summary=document.querySelector('#runner-summary');if(summary)summary.textContent=runnerLabel();}
-function composer(){const active=workspace.conversations.find(c=>c.id===selected)?.run;const busy=active&&['queued','running','waiting'].includes(active.status);return h('form',{onSubmit:formHandler(async fields=>{const result=selected?await api('/conversations/'+selected+'/messages',fields):await api('/conversations',fields);if(!selected)selected=result.conversation.id;events=[];runs=[];cursor=0;workspace=await api('/workspace');buildShell();await refreshConversation()})},h('label',{},selected?'Continue the conversation':'What should Codex work on?',h('textarea',{name:'text',placeholder:'Describe a task, bug, or idea…',required:true,maxlength:20000,disabled:busy})),h('div',{class:'row'},h('small',{},busy?'A task is active. Stop it before sending another message.':'Changes stay in a project worktree. Nothing is published automatically.'),h('button',{type:'submit',class:'primary',disabled:busy},'Send task ↑')))}
-function renderBody(){const body=document.querySelector('#body'),footer=document.querySelector('#composer');footer.replaceChildren();if(view==='office'){document.querySelector('#heading').textContent=' Live office';body.replaceChildren(h('iframe',{class:'office',src:'/office/?poll=1',title:'Live project agents'}));return;}
- if(!selected){document.querySelector('#heading').textContent=' Workspace';body.replaceChildren(h('section',{class:'welcome'},h('p',{class:'eyebrow'},'A place for work in progress'),h('h1',{},'Your next idea starts with a conversation.'),h('p',{},'Give Codex a task. Follow the changes, review what needs your attention, and continue from any device.'),h('div',{id:'banner'},runnerBanner()),h('div',{class:'cards'},h('div',{class:'card'},h('strong',{},'Built to remember'),h('small',{},'Messages and task events are saved to your workspace database.')),h('div',{class:'card'},h('strong',{},'You stay in control'),h('small',{},'Stop tasks and review requests for extra permissions.')),h('div',{class:'card'},h('strong',{},'Work together'),h('small',{},'Invite trusted collaborators with their own accounts.')))));}
- else{document.querySelector('#heading').textContent=' '+(workspace.conversations.find(c=>c.id===selected)?.title||'Conversation');body.replaceChildren(h('div',{class:'messages'},h('div',{id:'banner'},runnerBanner()),h('div',{id:'timeline'},h('p',{class:'muted'},'Loading conversation…'))));}
- footer.append(composer());}
-function renderTimeline(){const timeline=document.querySelector('#timeline');if(!timeline)return;const scroll=document.querySelector('#body'),near=scroll.scrollHeight-scroll.scrollTop-scroll.clientHeight<100,old=scroll.scrollTop;
- timeline.replaceChildren(...events.map(e=>{if(e.type==='message.user'||e.type==='message.assistant')return h('article',{class:'message '+(e.type==='message.user'?'user':'assistant')},h('span',{class:'author'},e.type==='message.user'?e.data.user||'Collaborator':'Codex'),e.data.text||'');
- const labels={'run.queued':'Queued — waiting for the runner','run.started':'Codex started this task','run.completed':'Task completed','run.failed':'Task failed','run.cancelled':'Task stopped','run.interrupted':'Runner disconnected — this task was interrupted','run.stop_requested':'Stop requested','approval.decided':'Owner decision: '+e.data.decision};
- if(e.type==='thread.started'||e.type==='approval.requested')return null;
- const entry=h('div',{class:'event'},labels[e.type]||e.data.text||e.type);
- if(e.data.message)entry.append(h('p',{},e.data.message));if(e.data.output)entry.append(h('details',{},h('summary',{},'Command output'),h('pre',{},e.data.output)));if(e.data.kind==='diff')entry.replaceChildren(h('details',{},h('summary',{},'Review changes'),h('pre',{},e.data.text)));return entry;}).filter(Boolean));
- const latest=runs.at(-1);const busy=latest&&['queued','running','waiting'].includes(latest.status);const composerForm=document.querySelector('#composer form');if(composerForm){composerForm.querySelector('textarea').disabled=!!busy;composerForm.querySelector('button[type=submit]').disabled=!!busy;}if(latest&&['running','waiting','queued'].includes(latest.status))timeline.append(h('div',{class:'actions'},status(latest.status),h('button',{onClick:async()=>{try{await api('/runs/'+latest.id+'/stop',{});notice('Stop requested')}catch(e){notice(e.message)}}},'Stop task')));
- for(const r of runs)if(r.status==='waiting')for(const approval of r.approvals.filter(a=>!a.decision)){const box=h('section',{class:'approval'},h('strong',{},'Owner approval needed'),h('p',{},approval.description));if(user.role==='owner')box.append(h('div',{class:'actions'},...['accept','decline','cancel'].map(decision=>h('button',{onClick:async()=>{try{await api(`/runs/${r.id}/approvals/${approval.id}`,{decision});await refreshConversation()}catch(e){notice(e.message)}}},decision==='accept'?'Allow once':decision==='decline'?'Decline':'Stop task'))));else box.append(h('small',{},'The workspace owner must review this request.'));timeline.append(box);}
- if(near)scroll.scrollTop=scroll.scrollHeight;else scroll.scrollTop=old;
+async function api(path, data) {
+  const response = await fetch("/api" + path, {
+    method: data === undefined ? "GET" : "POST",
+    headers:
+      data === undefined
+        ? {}
+        : { "Content-Type": "application/json", "X-Codex-Client": "web" },
+    body: data === undefined ? undefined : JSON.stringify(data),
+  });
+  let result;
+  try {
+    result = await response.json();
+  } catch {
+    throw new Error("Connection unavailable. Please retry.");
+  }
+  if (!response.ok) {
+    if (response.status === 401 && user) {
+      user = null;
+      await boot();
+    }
+    throw new Error(result.error || "Request failed");
+  }
+  return result;
 }
-async function refreshConversation(){const id=selected;if(!id||view!=='chat')return;const data=await api('/conversations/'+id+'?after='+cursor);if(id!==selected)return;events.push(...data.events);if(data.events.length)cursor=data.events.at(-1).id;runs=data.runs;renderTimeline();}
-function inviteDialog(){if(dialog)dialog.remove();const result=h('div',{});const close=()=>{dialog?.remove();dialog=null};dialog=h('div',{class:'dialog',role:'dialog','aria-modal':'true','aria-label':'Invite collaborator'},h('section',{class:'dialog-card'},h('h2',{},'Invite a collaborator'),h('p',{class:'muted'},'Invited collaborators can read shared conversations and queue tasks on your connected runner. Only you can approve extra permissions.'),h('form',{onSubmit:formHandler(async fields=>{const data=await api('/invitations',fields);const link=location.origin+data.invitePath;result.replaceChildren(h('p',{},'Send this private invitation to '+fields.email+'. It expires in 48 hours.'),h('p',{class:'invite-link'},link),h('button',{type:'button',onClick:async()=>{await navigator.clipboard.writeText(link);notice('Invitation copied')}},'Copy invitation'));})},input('email','Their email','email'),h('button',{class:'primary',type:'submit'},'Create invitation')),result,h('div',{class:'actions'},h('button',{onClick:close},'Done'))));document.body.append(dialog);api('/members').then(data=>{const members=h('section',{class:'members'},h('h2',{},'Workspace members'));for(const member of data.members)members.append(h('div',{},h('span',{},member.name+' · '+member.email),member.role==='owner'?h('small',{},'Owner'):h('button',{onClick:async()=>{try{await api('/members/'+member.id+'/revoke',{});notice('Collaborator access removed');close()}catch(e){notice(e.message)}}},'Remove')));dialog?.querySelector('.dialog-card').append(members)}).catch(e=>notice(e.message));}
-async function openWorkspace(){workspace=await api('/workspace');buildShell();}
-async function boot(){try{const data=await api('/session');user=data.user;if(!user)showAuth(data.setupRequired);else await openWorkspace()}catch{app.replaceChildren(h('main',{class:'auth'},h('div',{class:'wordmark'},'CODEX CONVOS'),h('h1',{},'Workspace unavailable'),h('p',{},'The service may be waking up. Your history stays in the database.'),h('button',{onClick:boot},'Try again')))}}
-setInterval(async()=>{if(!user||pollBusy||document.hidden)return;pollBusy=true;try{workspace=await api('/workspace');renderSidebar();const banner=document.querySelector('#banner');if(banner)banner.replaceChildren(runnerBanner());await refreshConversation();}catch{}finally{pollBusy=false}},3000);
+const input = (name, label, type = "text", attrs = {}) =>
+  h("label", {}, label, h("input", { name, type, required: true, ...attrs }));
+function formHandler(fn) {
+  return async (e) => {
+    e.preventDefault();
+    const form = e.currentTarget;
+    const button = form.querySelector("button[type=submit]");
+    if (button) button.disabled = true;
+    try {
+      await fn(Object.fromEntries(new FormData(form)));
+    } catch (err) {
+      notice(err.message);
+    } finally {
+      if (button) button.disabled = false;
+    }
+  };
+}
+function showAuth(setup = false) {
+  const invite = new URLSearchParams(location.search).get("invite");
+  const mode = invite ? "join" : setup ? "setup" : "login";
+  const form = h(
+    "form",
+    {
+      onSubmit: formHandler(async (fields) => {
+        const data = await api("/" + mode, {
+          ...fields,
+          ...(invite ? { invite } : {}),
+        });
+        user = data.user;
+        history.replaceState(null, "", "/");
+        await openWorkspace();
+      }),
+    },
+    mode !== "login"
+      ? input("name", "Your name", "text", { maxlength: 60 })
+      : null,
+    input("email", "Email", "email", { autocomplete: "email" }),
+    input(
+      "password",
+      mode === "login"
+        ? "Password"
+        : "Choose a password (at least 12 characters)",
+      "password",
+      {
+        minlength: mode === "login" ? 1 : 12,
+        autocomplete: mode === "login" ? "current-password" : "new-password",
+      },
+    ),
+    setup && !invite
+      ? input("setupKey", "Owner setup key", "password", {
+          autocomplete: "off",
+        })
+      : null,
+    h(
+      "button",
+      { class: "primary", type: "submit" },
+      mode === "login"
+        ? "Sign in"
+        : mode === "join"
+          ? "Accept invitation"
+          : "Create owner account",
+    ),
+  );
+  app.replaceChildren(
+    h(
+      "main",
+      { class: "auth" },
+      h("div", { class: "wordmark" }, "CODEX CONVOS"),
+      h("p", { class: "eyebrow" }, "Your private coding workspace"),
+      h(
+        "h1",
+        {},
+        mode === "login"
+          ? "Welcome back."
+          : mode === "join"
+            ? "You’re invited."
+            : "Let’s make it yours.",
+      ),
+      h(
+        "p",
+        {},
+        mode === "login"
+          ? "Pick up a conversation, review the work, and keep your project moving."
+          : mode === "join"
+            ? "Join this shared workspace with your own account."
+            : "Set up the owner account. Only invited collaborators can join afterward.",
+      ),
+      form,
+      h(
+        "p",
+        { class: "footnote" },
+        "Conversations started here are tracked automatically. Existing ChatGPT and Codex app conversations are not imported.",
+      ),
+    ),
+  );
+}
+const status = (s) =>
+  h(
+    "span",
+    { class: "status " + s },
+    h("span", { class: "dot" }),
+    s || "ready",
+  );
+function runnerLabel() {
+  const r = workspace?.runner;
+  return !r?.online
+    ? "Runner offline"
+    : r.accountReady
+      ? "Codex connected"
+      : "Runner needs sign-in";
+}
+function runnerBanner() {
+  const r = workspace.runner;
+  const box = h(
+    "div",
+    { class: "runner-banner" },
+    h("strong", {}, runnerLabel()),
+    h(
+      "div",
+      {},
+      !r.online
+        ? "You can queue a task now. It starts when an authenticated runner connects."
+        : !r.accountReady
+          ? "The owner needs to sign in to Codex on the connected runner."
+          : "Tasks run in isolated project worktrees. Code edits and tests are automatic; extra permissions require owner review.",
+    ),
+  );
+  if (user.role === "owner" && r.online && !r.accountReady)
+    box.append(
+      h(
+        "button",
+        {
+          onClick: async () => {
+            try {
+              await api("/runner-login", {});
+              notice("Sign-in requested. Your code will appear here shortly.");
+            } catch (e) {
+              notice(e.message);
+            }
+          },
+        },
+        "Connect Codex subscription",
+      ),
+    );
+  if (
+    user.role === "owner" &&
+    r.login?.status === "pending" &&
+    r.login.verificationUrl
+  ) {
+    box.append(
+      h(
+        "p",
+        {},
+        "Open the official sign-in page and enter: ",
+        h("strong", {}, r.login.userCode),
+      ),
+      h(
+        "a",
+        {
+          href: r.login.verificationUrl,
+          target: "_blank",
+          rel: "noopener noreferrer",
+        },
+        "Sign in with OpenAI",
+      ),
+    );
+  }
+  return box;
+}
+function buildShell() {
+  app.replaceChildren(
+    h(
+      "div",
+      { class: "shell" },
+      h("aside", { class: "sidebar" + (menu ? " open" : ""), id: "sidebar" }),
+      h(
+        "main",
+        { class: "main" },
+        h(
+          "header",
+          { class: "topbar" },
+          h(
+            "div",
+            {},
+            h(
+              "button",
+              {
+                class: "mobile-menu",
+                "aria-label": "Open conversations",
+                onClick: () => {
+                  menu = !menu;
+                  renderSidebar();
+                },
+              },
+              "☰",
+            ),
+            h("strong", { id: "heading" }, " Workspace"),
+          ),
+          h(
+            "small",
+            { class: "runner-summary", id: "runner-summary" },
+            runnerLabel(),
+          ),
+        ),
+        h("section", { class: "workspace-body", id: "body" }),
+        h("footer", { class: "composer", id: "composer" }),
+      ),
+    ),
+  );
+  renderSidebar();
+  renderBody();
+}
+function renderSidebar() {
+  const sidebar = document.querySelector("#sidebar");
+  if (!sidebar) return;
+  sidebar.className = "sidebar" + (menu ? " open" : "");
+  sidebar.replaceChildren(
+    h("div", { class: "wordmark" }, "CODEX CONVOS"),
+    h(
+      "div",
+      { class: "project" },
+      h("strong", {}, "CODEX CONVOS"),
+      h("small", {}, "Shared project workspace"),
+      h(
+        "a",
+        {
+          href: workspace.project.repo,
+          target: "_blank",
+          rel: "noopener noreferrer",
+        },
+        "GitHub repository ↗",
+      ),
+      h("button", { onClick: projectDialog }, "Repository activity"),
+    ),
+    h(
+      "button",
+      {
+        class: "primary",
+        onClick: () => {
+          selected = null;
+          events = [];
+          cursor = 0;
+          view = "chat";
+          menu = false;
+          buildShell();
+        },
+      },
+      "+ New conversation",
+    ),
+    h(
+      "div",
+      { class: "nav" },
+      h(
+        "button",
+        {
+          class: view === "chat" ? "selected" : "",
+          onClick: () => {
+            view = "chat";
+            menu = false;
+            buildShell();
+          },
+        },
+        "Conversations",
+      ),
+      h(
+        "button",
+        {
+          class: view === "office" ? "selected" : "",
+          onClick: () => {
+            view = "office";
+            menu = false;
+            buildShell();
+          },
+        },
+        "Live office",
+      ),
+    ),
+    h(
+      "div",
+      { class: "convolist" },
+      workspace.conversations.length
+        ? workspace.conversations.map((c) =>
+            h(
+              "button",
+              {
+                class: "conversation" + (selected === c.id ? " selected" : ""),
+                onClick: () => {
+                  selected = c.id;
+                  events = [];
+                  cursor = 0;
+                  runs = [];
+                  view = "chat";
+                  menu = false;
+                  buildShell();
+                  refreshConversation();
+                },
+              },
+              h("span", {}, c.title),
+              status(c.run?.status || "ready"),
+            ),
+          )
+        : h(
+            "div",
+            { class: "empty" },
+            "No conversations yet. Start with a small, specific task.",
+          ),
+    ),
+    h(
+      "div",
+      { class: "bottom" },
+      h("small", {}, user.name + " · " + user.role),
+      user.role === "owner"
+        ? h("button", { onClick: inviteDialog }, "People & invitations")
+        : null,
+      user.role === "owner"
+        ? h(
+            "a",
+            { href: "/api/export", download: "codex-convos-history.json" },
+            "Export conversation history",
+          )
+        : null,
+      h(
+        "button",
+        {
+          onClick: async () => {
+            await api("/logout", {});
+            user = null;
+            await boot();
+          },
+        },
+        "Sign out",
+      ),
+    ),
+  );
+  const summary = document.querySelector("#runner-summary");
+  if (summary) summary.textContent = runnerLabel();
+}
+function composer() {
+  const active = workspace.conversations.find((c) => c.id === selected)?.run;
+  const busy =
+    active && ["queued", "running", "waiting"].includes(active.status);
+  return h(
+    "form",
+    {
+      onSubmit: formHandler(async (fields) => {
+        const result = selected
+          ? await api("/conversations/" + selected + "/messages", fields)
+          : await api("/conversations", fields);
+        if (!selected) selected = result.conversation.id;
+        events = [];
+        runs = [];
+        cursor = 0;
+        workspace = await api("/workspace");
+        buildShell();
+        await refreshConversation();
+      }),
+    },
+    h(
+      "label",
+      {},
+      selected ? "Continue the conversation" : "What should Codex work on?",
+      h("textarea", {
+        name: "text",
+        placeholder: "Describe a task, bug, or idea…",
+        required: true,
+        maxlength: 20000,
+        disabled: busy,
+      }),
+    ),
+    h(
+      "div",
+      { class: "row" },
+      h(
+        "small",
+        {},
+        busy
+          ? "A task is active. Stop it before sending another message."
+          : "Changes stay in a project worktree. Nothing is published automatically.",
+      ),
+      h(
+        "button",
+        { type: "submit", class: "primary", disabled: busy },
+        "Send task ↑",
+      ),
+    ),
+  );
+}
+function renderBody() {
+  const body = document.querySelector("#body"),
+    footer = document.querySelector("#composer");
+  footer.replaceChildren();
+  if (view === "office") {
+    document.querySelector("#heading").textContent = " Live office";
+    body.replaceChildren(
+      h("iframe", {
+        class: "office",
+        src: "/office/?poll=1",
+        title: "Live project agents",
+      }),
+    );
+    return;
+  }
+  if (!selected) {
+    document.querySelector("#heading").textContent = " Workspace";
+    body.replaceChildren(
+      h(
+        "section",
+        { class: "welcome" },
+        h("p", { class: "eyebrow" }, "A place for work in progress"),
+        h("h1", {}, "Your next idea starts with a conversation."),
+        h(
+          "p",
+          {},
+          "Give Codex a task. Follow the changes, review what needs your attention, and continue from any device.",
+        ),
+        h("div", { id: "banner" }, runnerBanner()),
+        h(
+          "div",
+          { class: "cards" },
+          h(
+            "div",
+            { class: "card" },
+            h("strong", {}, "Built to remember"),
+            h(
+              "small",
+              {},
+              "Messages and task events are saved to your workspace database.",
+            ),
+          ),
+          h(
+            "div",
+            { class: "card" },
+            h("strong", {}, "You stay in control"),
+            h(
+              "small",
+              {},
+              "Stop tasks and review requests for extra permissions.",
+            ),
+          ),
+          h(
+            "div",
+            { class: "card" },
+            h("strong", {}, "Work together"),
+            h(
+              "small",
+              {},
+              "Invite trusted collaborators with their own accounts.",
+            ),
+          ),
+        ),
+      ),
+    );
+  } else {
+    document.querySelector("#heading").textContent =
+      " " +
+      (workspace.conversations.find((c) => c.id === selected)?.title ||
+        "Conversation");
+    body.replaceChildren(
+      h(
+        "div",
+        { class: "messages" },
+        h("div", { id: "banner" }, runnerBanner()),
+        h(
+          "div",
+          { id: "timeline" },
+          h("p", { class: "muted" }, "Loading conversation…"),
+        ),
+      ),
+    );
+  }
+  footer.append(composer());
+}
+function renderTimeline() {
+  const timeline = document.querySelector("#timeline");
+  if (!timeline) return;
+  const scroll = document.querySelector("#body"),
+    near = scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight < 100,
+    old = scroll.scrollTop;
+  timeline.replaceChildren(
+    ...events
+      .map((e) => {
+        if (e.type === "message.user" || e.type === "message.assistant")
+          return h(
+            "article",
+            {
+              class:
+                "message " + (e.type === "message.user" ? "user" : "assistant"),
+            },
+            h(
+              "span",
+              { class: "author" },
+              e.type === "message.user"
+                ? e.data.user || "Collaborator"
+                : "Codex",
+            ),
+            e.data.text || "",
+          );
+        const labels = {
+          "run.queued": "Queued — waiting for the runner",
+          "run.started": "Codex started this task",
+          "run.completed": "Task completed",
+          "run.failed": "Task failed",
+          "run.cancelled": "Task stopped",
+          "run.interrupted": "Runner disconnected — this task was interrupted",
+          "run.stop_requested": "Stop requested",
+          "approval.decided": "Owner decision: " + e.data.decision,
+        };
+        if (e.type === "thread.started" || e.type === "approval.requested")
+          return null;
+        const entry = h(
+          "div",
+          { class: "event" },
+          labels[e.type] || e.data.text || e.type,
+        );
+        if (e.data.message) entry.append(h("p", {}, e.data.message));
+        if (e.data.output)
+          entry.append(
+            h(
+              "details",
+              {},
+              h("summary", {}, "Command output"),
+              h("pre", {}, e.data.output),
+            ),
+          );
+        if (e.data.kind === "diff")
+          entry.replaceChildren(
+            h(
+              "details",
+              {},
+              h("summary", {}, "Review changes"),
+              h("pre", {}, e.data.text),
+            ),
+          );
+        return entry;
+      })
+      .filter(Boolean),
+  );
+  const latest = runs.at(-1);
+  const busy =
+    latest && ["queued", "running", "waiting"].includes(latest.status);
+  const composerForm = document.querySelector("#composer form");
+  if (composerForm) {
+    composerForm.querySelector("textarea").disabled = !!busy;
+    composerForm.querySelector("button[type=submit]").disabled = !!busy;
+  }
+  if (latest && ["running", "waiting", "queued"].includes(latest.status))
+    timeline.append(
+      h(
+        "div",
+        { class: "actions" },
+        status(latest.status),
+        h(
+          "button",
+          {
+            onClick: async () => {
+              try {
+                await api("/runs/" + latest.id + "/stop", {});
+                notice("Stop requested");
+              } catch (e) {
+                notice(e.message);
+              }
+            },
+          },
+          "Stop task",
+        ),
+      ),
+    );
+  for (const r of runs)
+    if (r.status === "waiting")
+      for (const approval of r.approvals.filter((a) => !a.decision)) {
+        const box = h(
+          "section",
+          { class: "approval" },
+          h("strong", {}, "Owner approval needed"),
+          h("p", {}, approval.description),
+        );
+        if (user.role === "owner")
+          box.append(
+            h(
+              "div",
+              { class: "actions" },
+              ...["accept", "decline", "cancel"].map((decision) =>
+                h(
+                  "button",
+                  {
+                    onClick: async () => {
+                      try {
+                        await api(`/runs/${r.id}/approvals/${approval.id}`, {
+                          decision,
+                        });
+                        await refreshConversation();
+                      } catch (e) {
+                        notice(e.message);
+                      }
+                    },
+                  },
+                  decision === "accept"
+                    ? "Allow once"
+                    : decision === "decline"
+                      ? "Decline"
+                      : "Stop task",
+                ),
+              ),
+            ),
+          );
+        else
+          box.append(
+            h("small", {}, "The workspace owner must review this request."),
+          );
+        timeline.append(box);
+      }
+  if (near) scroll.scrollTop = scroll.scrollHeight;
+  else scroll.scrollTop = old;
+}
+async function refreshConversation() {
+  const id = selected;
+  if (!id || view !== "chat") return;
+  const data = await api("/conversations/" + id + "?after=" + cursor);
+  if (id !== selected) return;
+  events.push(...data.events);
+  if (data.events.length) cursor = data.events.at(-1).id;
+  runs = data.runs;
+  renderTimeline();
+}
+function inviteDialog() {
+  if (dialog) dialog.remove();
+  const result = h("div", {});
+  const close = () => {
+    dialog?.remove();
+    dialog = null;
+  };
+  dialog = h(
+    "div",
+    {
+      class: "dialog",
+      role: "dialog",
+      "aria-modal": "true",
+      "aria-label": "Invite collaborator",
+    },
+    h(
+      "section",
+      { class: "dialog-card" },
+      h("h2", {}, "Invite a collaborator"),
+      h(
+        "p",
+        { class: "muted" },
+        "Invited collaborators can read shared conversations and queue tasks on your connected runner. Only you can approve extra permissions.",
+      ),
+      h(
+        "form",
+        {
+          onSubmit: formHandler(async (fields) => {
+            const data = await api("/invitations", fields);
+            const link = location.origin + data.invitePath;
+            result.replaceChildren(
+              h(
+                "p",
+                {},
+                "Send this private invitation to " +
+                  fields.email +
+                  ". It expires in 48 hours.",
+              ),
+              h("p", { class: "invite-link" }, link),
+              h(
+                "button",
+                {
+                  type: "button",
+                  onClick: async () => {
+                    await navigator.clipboard.writeText(link);
+                    notice("Invitation copied");
+                  },
+                },
+                "Copy invitation",
+              ),
+            );
+          }),
+        },
+        input("email", "Their email", "email"),
+        h("button", { class: "primary", type: "submit" }, "Create invitation"),
+      ),
+      result,
+      h("div", { class: "actions" }, h("button", { onClick: close }, "Done")),
+    ),
+  );
+  document.body.append(dialog);
+  api("/members")
+    .then((data) => {
+      const members = h(
+        "section",
+        { class: "members" },
+        h("h2", {}, "Workspace members"),
+      );
+      for (const member of data.members)
+        members.append(
+          h(
+            "div",
+            {},
+            h("span", {}, member.name + " · " + member.email),
+            member.role === "owner"
+              ? h("small", {}, "Owner")
+              : h(
+                  "button",
+                  {
+                    onClick: async () => {
+                      try {
+                        await api("/members/" + member.id + "/revoke", {});
+                        notice("Collaborator access removed");
+                        close();
+                      } catch (e) {
+                        notice(e.message);
+                      }
+                    },
+                  },
+                  "Remove",
+                ),
+          ),
+        );
+      dialog?.querySelector(".dialog-card").append(members);
+    })
+    .catch((e) => notice(e.message));
+}
+async function openWorkspace() {
+  workspace = await api("/workspace");
+  buildShell();
+}
+async function boot() {
+  try {
+    const data = await api("/session");
+    user = data.user;
+    if (!user) showAuth(data.setupRequired);
+    else await openWorkspace();
+  } catch {
+    app.replaceChildren(
+      h(
+        "main",
+        { class: "auth" },
+        h("div", { class: "wordmark" }, "CODEX CONVOS"),
+        h("h1", {}, "Workspace unavailable"),
+        h(
+          "p",
+          {},
+          "The service may be waking up. Your history stays in the database.",
+        ),
+        h("button", { onClick: boot }, "Try again"),
+      ),
+    );
+  }
+}
+setInterval(async () => {
+  if (!user || pollBusy || document.hidden) return;
+  pollBusy = true;
+  try {
+    workspace = await api("/workspace");
+    renderSidebar();
+    const banner = document.querySelector("#banner");
+    if (banner) banner.replaceChildren(runnerBanner());
+    await refreshConversation();
+  } catch {
+  } finally {
+    pollBusy = false;
+  }
+}, 3000);
 await boot();
 
-async function projectDialog(){
- const overlay=h('div',{class:'dialog',role:'dialog','aria-modal':'true','aria-label':'Repository activity'});const content=h('section',{class:'dialog-card'},h('h2',{},'Repository activity'),h('p',{class:'muted'},'Loading GitHub…'));overlay.append(content);document.body.append(overlay);
- try{const p=await api('/project');content.replaceChildren(h('h2',{},'CODEX CONVOS · GitHub'));const link=(title,path)=>h('p',{},h('a',{href:p.url+path,target:'_blank',rel:'noopener noreferrer'},title));content.append(h('p',{class:'eyebrow'},'Latest commits'),...p.commits.map(c=>link(c.title,'/commit/'+encodeURIComponent(c.sha))),h('p',{class:'eyebrow'},'Open pull requests'),...(p.pulls.length?p.pulls.map(r=>link('#'+r.number+' '+r.title,'/pull/'+Number(r.number))):[h('p',{class:'muted'},'No open pull requests')]),h('p',{class:'eyebrow'},'Build results'),...(p.builds.length?p.builds.map(b=>link(b.title+' · '+b.status,'/actions/runs/'+Number(b.id))):[h('p',{class:'muted'},'No workflow runs yet')]),...p.errors.map(e=>h('p',{class:'muted'},e)),h('small',{},'Checked '+new Date(p.checkedAt).toLocaleTimeString()+'. Results are cached for five minutes.'));
- }catch(e){content.replaceChildren(h('h2',{},'Repository activity'),h('p',{},e.message));}
- content.append(h('div',{class:'actions'},h('button',{onClick:()=>overlay.remove()},'Done')));
+async function projectDialog() {
+  const overlay = h("div", {
+    class: "dialog",
+    role: "dialog",
+    "aria-modal": "true",
+    "aria-label": "Repository activity",
+  });
+  const content = h(
+    "section",
+    { class: "dialog-card" },
+    h("h2", {}, "Repository activity"),
+    h("p", { class: "muted" }, "Loading GitHub…"),
+  );
+  overlay.append(content);
+  document.body.append(overlay);
+  try {
+    const p = await api("/project");
+    content.replaceChildren(h("h2", {}, "CODEX CONVOS · GitHub"));
+    const link = (title, path) =>
+      h(
+        "p",
+        {},
+        h(
+          "a",
+          { href: p.url + path, target: "_blank", rel: "noopener noreferrer" },
+          title,
+        ),
+      );
+    content.append(
+      h("p", { class: "eyebrow" }, "Latest commits"),
+      ...p.commits.map((c) =>
+        link(c.title, "/commit/" + encodeURIComponent(c.sha)),
+      ),
+      h("p", { class: "eyebrow" }, "Open pull requests"),
+      ...(p.pulls.length
+        ? p.pulls.map((r) =>
+            link("#" + r.number + " " + r.title, "/pull/" + Number(r.number)),
+          )
+        : [h("p", { class: "muted" }, "No open pull requests")]),
+      h("p", { class: "eyebrow" }, "Build results"),
+      ...(p.builds.length
+        ? p.builds.map((b) =>
+            link(b.title + " · " + b.status, "/actions/runs/" + Number(b.id)),
+          )
+        : [h("p", { class: "muted" }, "No workflow runs yet")]),
+      ...p.errors.map((e) => h("p", { class: "muted" }, e)),
+      h(
+        "small",
+        {},
+        "Checked " +
+          new Date(p.checkedAt).toLocaleTimeString() +
+          ". Results are cached for five minutes.",
+      ),
+    );
+  } catch (e) {
+    content.replaceChildren(
+      h("h2", {}, "Repository activity"),
+      h("p", {}, e.message),
+    );
+  }
+  content.append(
+    h(
+      "div",
+      { class: "actions" },
+      h("button", { onClick: () => overlay.remove() }, "Done"),
+    ),
+  );
 }
