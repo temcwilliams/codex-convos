@@ -55,6 +55,9 @@ export function createApp({
     throw new Error(
       "OWNER_SETUP_KEY and RUNNER_KEY must each contain at least 32 characters",
     );
+  let runtimeRunner = null;
+  let runnerCommand = null;
+  let queuedHint = true;
   const app = express();
   app.set("trust proxy", 1);
   app.disable("x-powered-by");
@@ -270,19 +273,26 @@ export function createApp({
     });
   });
   app.post("/api/runner-login", auth, owner, async (req, res) => {
-    await store.change((s) => {
-      if (active(s).some((r) => r.status !== "queued"))
-        fail(409, "Stop the active task before changing sign-in");
-      s.runnerCommand = { id: randomUUID(), type: "login" };
-    });
+    const state = await store.read();
+    if (active(state).some((r) => r.status !== "queued"))
+      fail(409, "Stop the active task before changing sign-in");
+    runnerCommand = { id: randomUUID(), type: "login" };
     res.json({ ok: true });
   });
   app.get("/api/workspace", auth, async (req, res) => {
-    await store.change((s) => expireRuns(s));
-    const s = await store.read();
+    let s = await store.read();
+    if (
+      s.runs.some(
+        (r) =>
+          ["running", "waiting"].includes(r.status) && r.leaseUntil < now(),
+      )
+    ) {
+      await store.change(expireRuns);
+      s = await store.read();
+    }
     const runner =
-      s.runner && s.runner.lastSeen > now() - 45000
-        ? { ...s.runner, online: true }
+      runtimeRunner && runtimeRunner.lastSeen > now() - 45000
+        ? { ...runtimeRunner, online: true }
         : { online: false, accountReady: false };
     if (req.user.role !== "owner") delete runner.login;
     res.json({
@@ -327,6 +337,7 @@ export function createApp({
       event(s, c.id, "message.user", { text, user: req.user.name });
       event(s, c.id, "run.queued", { runId: run.id });
     });
+    queuedHint = true;
     res.json({ conversation: c, run });
   });
   app.get("/api/conversations/:id", auth, async (req, res) => {
@@ -371,6 +382,7 @@ export function createApp({
       });
       event(s, run.conversationId, "run.queued", { runId: run.id });
     });
+    queuedHint = true;
     res.json({ run });
   });
   app.post("/api/runs/:id/stop", auth, async (req, res) => {
@@ -437,59 +449,71 @@ export function createApp({
           .optional(),
       })
       .parse(req.body);
-    const control = await store.change((s) => {
-      expireRuns(s);
-      if (
-        s.runner &&
-        s.runner.id !== body.id &&
-        s.runner.lastSeen > now() - 45000
-      )
-        fail(409, "Another runner is connected");
-      s.runner = {
-        id: body.id,
-        lastSeen: now(),
-        accountReady: body.accountReady,
-        accountType: body.accountType || "unknown",
-        login: body.login || null,
-      };
-      if (body.accountReady) s.runnerCommand = null;
-      const r = s.runs.find((r) => r.id === body.runId);
-      if (
-        r &&
-        r.runnerId === body.id &&
-        ["running", "waiting"].includes(r.status)
-      )
-        r.leaseUntil = now() + 45000;
-      return {
-        cancelRequested: !!r?.cancelRequested,
-        approvals: r?.approvals || [],
-        leaseActive: !!r && ["running", "waiting"].includes(r.status),
-        command: s.runnerCommand || null,
-      };
-    });
+    if (
+      runtimeRunner &&
+      runtimeRunner.id !== body.id &&
+      runtimeRunner.lastSeen > now() - 45000
+    )
+      fail(409, "Another runner is connected");
+    runtimeRunner = {
+      id: body.id,
+      lastSeen: now(),
+      accountReady: body.accountReady,
+      accountType: body.accountType || "unknown",
+      login: body.login || null,
+    };
+    if (body.accountReady) runnerCommand = null;
+    let control = {
+      cancelRequested: false,
+      approvals: [],
+      leaseActive: false,
+      command: runnerCommand,
+    };
+    if (body.runId)
+      control = await store.change((s) => {
+        expireRuns(s);
+        const r = s.runs.find((r) => r.id === body.runId);
+        if (
+          r &&
+          r.runnerId === body.id &&
+          ["running", "waiting"].includes(r.status)
+        )
+          r.leaseUntil = now() + 45000;
+        return {
+          cancelRequested: !!r?.cancelRequested,
+          approvals: r?.approvals || [],
+          leaseActive: !!r && ["running", "waiting"].includes(r.status),
+          command: runnerCommand,
+        };
+      });
     res.json(control);
   });
   app.post("/api/runner/claim", runner, async (req, res) => {
     const id = z.string().parse(req.body.id);
-    const run = await store.change((s) => {
+    if (
+      !runtimeRunner ||
+      runtimeRunner.id !== id ||
+      !runtimeRunner.accountReady ||
+      runtimeRunner.lastSeen < now() - 45000 ||
+      !queuedHint
+    ) {
+      res.json({ run: null });
+      return;
+    }
+    const outcome = await store.change((s) => {
       expireRuns(s);
-      if (
-        !s.runner ||
-        s.runner.id !== id ||
-        !s.runner.accountReady ||
-        s.runner.lastSeen < now() - 45000
-      )
-        return null;
-      if (active(s).some((r) => r.status !== "queued")) return null;
+      if (active(s).some((r) => r.status !== "queued"))
+        return { run: null, hasQueued: true };
       const r = s.runs.find((r) => r.status === "queued");
-      if (!r) return null;
+      if (!r) return { run: null, hasQueued: false };
       r.status = "running";
       r.runnerId = id;
       r.leaseUntil = now() + 45000;
       event(s, r.conversationId, "run.started", { runId: r.id });
-      return r;
+      return { run: r, hasQueued: s.runs.some((x) => x.status === "queued") };
     });
-    res.json({ run });
+    queuedHint = outcome.hasQueued;
+    res.json({ run: outcome.run });
   });
   app.post("/api/runner/runs/:id/events", runner, async (req, res) => {
     const body = z
@@ -560,16 +584,14 @@ export function createApp({
   );
   app.use((err, req, res, next) => {
     if (res.headersSent) return next(err);
-    res
-      .status(err instanceof z.ZodError ? 400 : err.status || 500)
-      .json({
-        error:
-          err instanceof z.ZodError
-            ? "Invalid input"
-            : err.status
-              ? err.message
-              : "Request failed; please retry",
-      });
+    res.status(err instanceof z.ZodError ? 400 : err.status || 500).json({
+      error:
+        err instanceof z.ZodError
+          ? "Invalid input"
+          : err.status
+            ? err.message
+            : "Request failed; please retry",
+    });
   });
   return app;
 }

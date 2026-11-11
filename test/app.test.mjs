@@ -238,3 +238,35 @@ test("production refuses ephemeral history and workspace CAS does not lose concu
   await store.close();
   await rm(dir, { recursive: true, force: true });
 });
+
+test("an idle runner does not poll or mutate the database after checking the durable queue", async (t) => {
+  const { call, store } = await fixture(t);
+  await call(
+    "/runner/heartbeat",
+    { id: "idle-runner", accountReady: true },
+    "",
+    true,
+  );
+  await call("/runner/claim", { id: "idle-runner" }, "", true);
+  let reads = 0,
+    writes = 0;
+  const read = store.read,
+    change = store.change;
+  store.read = async (...args) => {
+    reads++;
+    return read(...args);
+  };
+  store.change = async (...args) => {
+    writes++;
+    return change(...args);
+  };
+  await call(
+    "/runner/heartbeat",
+    { id: "idle-runner", accountReady: true },
+    "",
+    true,
+  );
+  await call("/runner/claim", { id: "idle-runner" }, "", true);
+  assert.equal(reads, 0);
+  assert.equal(writes, 0);
+});

@@ -5,8 +5,9 @@
 - [x] Verify official app-server initialization without executing model work.
 - [x] Validate local phone flow and persistent history.
 - [x] Pass backend, storage and runner-protocol integration tests.
-- [ ] Provision a dedicated **free** Neon database after its tools become available.
-- [ ] Apply the workspace-state schema (the service bootstraps it idempotently).
+- [x] Provision a dedicated **free** Neon database (winter-river-70351562).
+- [x] Validate the schema and versioned update on isolated branch br-long-paper-bfsaeod8.
+- [ ] Verify schema initialization on production branch br-old-lab-bfmw7orj during deployment.
 - [ ] Create the free Render web service with production database and secret bindings.
 - [ ] Verify deployed authentication and persistence across a restart.
 - [ ] Connect an available runner and complete the owner's official device sign-in.

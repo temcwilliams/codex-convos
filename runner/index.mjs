@@ -193,7 +193,13 @@ async function checkout(conversationId) {
     await exec("git", ["-C", path, "rev-parse", "--is-inside-work-tree"]);
     return path;
   } catch {
-    await exec("git", ["--git-dir", repo, "fetch", "origin"]);
+    await exec("git", [
+      "--git-dir",
+      repo,
+      "fetch",
+      "origin",
+      process.env.PROJECT_REF || "main",
+    ]);
     await exec("git", [
       "--git-dir",
       repo,

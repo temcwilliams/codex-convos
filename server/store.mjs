@@ -1,4 +1,4 @@
-import { mkdir } from "node:fs/promises";
+import { mkdir, readFile } from "node:fs/promises";
 import { dirname } from "node:path";
 const initial = () => ({
   users: [],
@@ -11,15 +11,26 @@ const initial = () => ({
 });
 export async function openStore({
   url = process.env.DATABASE_URL,
+  schemaUrl = process.env.DATABASE_URL_UNPOOLED,
   file = process.env.SQLITE_PATH || "data/convos.sqlite",
   production = process.env.NODE_ENV === "production",
 } = {}) {
-  let query, close;
+  let query, close, migrate;
   if (url) {
     const { Pool } = await import("pg");
     const pool = new Pool({ connectionString: url, max: 3 });
     query = async (s, p = []) => (await pool.query(s, p)).rows;
     close = () => pool.end();
+    migrate = async (sql) => {
+      if (schemaUrl) {
+        const schemaPool = new Pool({ connectionString: schemaUrl, max: 1 });
+        try {
+          await schemaPool.query(sql);
+        } finally {
+          await schemaPool.end();
+        }
+      } else await pool.query(sql);
+    };
   } else {
     if (production)
       throw new Error(
@@ -39,9 +50,12 @@ export async function openStore({
     };
     close = () => db.close();
   }
-  await query(
-    "CREATE TABLE IF NOT EXISTS workspace_state (id TEXT PRIMARY KEY, version INTEGER NOT NULL, data TEXT NOT NULL)",
+  const schema = await readFile(
+    new URL("./schema.sql", import.meta.url),
+    "utf8",
   );
+  if (migrate) await migrate(schema);
+  else await query(schema);
   await query(
     "INSERT INTO workspace_state (id,version,data) VALUES ($1,0,$2) ON CONFLICT(id) DO NOTHING",
     ["workspace", JSON.stringify(initial())],
