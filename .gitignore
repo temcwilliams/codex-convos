@@ -2,3 +2,9 @@
 .env.*
 node_modules/
 *.log
+data/
+*.sqlite
+*.sqlite-*
+*.db
+.runner/
+!.env.example
