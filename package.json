@@ -9,7 +9,7 @@
   "scripts": {
     "start": "node server/index.mjs",
     "dev": "node --env-file-if-exists=.env server/index.mjs",
-    "runner": "node --env-file-if-exists=.env runner/index.mjs",
+    "runner": "node --use-env-proxy --env-file-if-exists=.env runner/index.mjs",
     "test": "node --test test/*.test.mjs",
     "check": "node scripts/check.mjs"
   },

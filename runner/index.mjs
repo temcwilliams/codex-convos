@@ -266,6 +266,7 @@ async function start(run) {
     clearInterval(renew);
   }
 }
+let reportedStatus = null;
 await boot();
 process.on("SIGTERM", () => {
   stopping = true;
@@ -283,6 +284,15 @@ while (!stopping) {
       runId: active?.id,
       login,
     });
+    const status = accountReady ? "ready" : "needs-sign-in";
+    if (status !== reportedStatus) {
+      console.log(
+        accountReady
+          ? "Runner online; Codex is signed in"
+          : "Runner online; waiting for owner Codex sign-in",
+      );
+      reportedStatus = status;
+    }
     if (control.command && control.command.id !== lastCommand) {
       lastCommand = control.command.id;
       if (control.command.type === "login" && !active) {
